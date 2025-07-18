@@ -1,18 +1,12 @@
 # pastebeam CUDA Client
 
-A high-performance CUDA client for [pastebeam](https://github.com/tsoding/pastebeam), leveraging GPU acceleration to speed up uploads.
-
----
-
+A high-performance CUDA client for [pastebeam](https://github.com/tsoding/pastebeam), leveraging GPU acceleration to
+speed up uploads.
 
 ## Prerequisites
 
-- NVIDIA GPU with recent CUDA toolkit  
-- CUDA Toolkit
-- A C++20-compatible compiler  
+- CUDA
 - Boost
-
----
 
 ```bash
 git clone https://github.com/tsoding/pastebeam-cuda-client.git
@@ -29,23 +23,19 @@ nvcc pastebeam_client.cu \
   -o pastebeam_client
 ```
 
----
-
 ## Usage
 
 Once compiled, the client supports two primary commands: `post` (upload) and `get` (download).
 
-1. Upload a file  
+1. Upload a file
    ```bash
    ./pastebeam_client post path/to/file.txt
    ```  
 
-2. Retrieve a paste by its hash  
+2. Retrieve a paste by its hash
    ```bash
    ./pastebeam_client get C62872F9E0E9C575546166CE4ACB528A46E54BA4ED8AF076E79C0D5AD61C974B
    ```  
-
----
 
 ## License
 
