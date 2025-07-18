@@ -20,6 +20,7 @@ constexpr size_t CONSTANT_BUFFER_SIZE = MAX_POST_SIZE + PREFIX_LEN + 64;
 constexpr int ATTEMPTS_PER_THREAD = 128;
 
 bool ENABLE_LOGGING = false;
+bool ENABLE_PROFILING_LOGGING = false;
 #define LOG                                                                                                            \
     if (ENABLE_LOGGING)                                                                                                \
     std::cerr
@@ -36,6 +37,9 @@ __constant__ uint32_t k_const[64] = {
 
 __constant__ char B64_CHARS_DEVICE[65] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 __constant__ uint8_t FIXED_DATA_CONST[CONSTANT_BUFFER_SIZE];
+
+// Global start time for the program
+std::chrono::steady_clock::time_point global_start;
 
 __device__ __forceinline__ uint32_t rotr32(uint32_t x, int n) { return __funnelshift_r(x, x, n); }
 
@@ -209,12 +213,23 @@ private:
 std::string perform_pow_cuda(const std::string &fixed_data, int zeros) {
     static bool initialized = false;
     if (!initialized) {
+        auto t0 = std::chrono::steady_clock::now();
         CUDA_CHECK(cudaMemcpyToSymbol(B64_CHARS_DEVICE,
                                       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", 65));
+        if (ENABLE_PROFILING_LOGGING) {
+            auto t1 = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - global_start).count();
+            std::cerr << "[" << elapsed << "ms] Initialized GPU constant data (base64 table)\n";
+        }
         initialized = true;
     }
-    CUDA_CHECK(cudaMemcpyToSymbol(FIXED_DATA_CONST, fixed_data.data(), fixed_data.size()));
 
+    CUDA_CHECK(cudaMemcpyToSymbol(FIXED_DATA_CONST, fixed_data.data(), fixed_data.size()));
+    if (ENABLE_PROFILING_LOGGING) {
+        auto t_copy1 = std::chrono::steady_clock::now();
+        auto elapsed_copy = std::chrono::duration_cast<std::chrono::milliseconds>(t_copy1 - global_start).count();
+        std::cerr << "[" << elapsed_copy << "ms] Copied fixed data to GPU (" << fixed_data.size() << " bytes)\n";
+    }
     CudaMem d_flag(sizeof(int));
     CudaMem d_out(PREFIX_LEN);
     int flag_zero = 0;
@@ -263,6 +278,11 @@ public:
         resolver_(io_context), socket_(io_context) {
         auto endpoints = resolver_.resolve(host, std::to_string(port));
         asio::connect(socket_, endpoints);
+        if (ENABLE_PROFILING_LOGGING) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - global_start).count();
+            std::cerr << "[" << elapsed << "ms] Connection established\n";
+        }
     }
 
     std::string read_line() {
@@ -302,16 +322,34 @@ public:
             throw std::runtime_error("POST rejected");
         std::istringstream ss(content);
         std::string line;
+        std::vector<std::string> lines;
         while (std::getline(ss, line)) {
             if (!line.empty() && line.back() == '\r')
                 line.pop_back();
             sent += line + "\r\n";
-            write_line(line);
-            if (read_line() != "OK")
-                throw std::runtime_error("Line rejected");
+            lines.push_back(line);
+        }
+        for (const auto &l: lines) {
+            write_line(l);
+        }
+        for (size_t i = 0; i < lines.size(); i++) {
+            if (read_line() != "OK") [[unlikely]]
+                throw std::runtime_error("POST rejected");
+        }
+        if (ENABLE_PROFILING_LOGGING) {
+            auto t_lines_sent = std::chrono::steady_clock::now();
+            auto elapsed_lines =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(t_lines_sent - global_start).count();
+            std::cerr << "[" << elapsed_lines << "ms] All lines sent\n";
         }
         write_line("SUBMIT");
         auto challenge = read_line();
+        if (ENABLE_PROFILING_LOGGING) {
+            auto t_challenge = std::chrono::steady_clock::now();
+            auto elapsed_challenge =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(t_challenge - global_start).count();
+            std::cerr << "[" << elapsed_challenge << "ms] Challenge received\n";
+        }
         std::vector<std::string> parts;
         boost::split(parts, challenge, boost::is_any_of(" "));
         if (parts.size() < 4 || parts[0] != "CHALLENGE" || parts[1] != "sha256")
@@ -321,9 +359,20 @@ public:
         std::string fixed_data = "\r\n" + sent + token + "\r\n";
         LOG << "Fixed size=" << fixed_data.size() << " bytes\n";
         auto prefix = perform_pow_cuda(fixed_data, zeros);
-        LOG << "Solution=" << prefix << "\n";
+        if (ENABLE_PROFILING_LOGGING) {
+            auto t_solution = std::chrono::steady_clock::now();
+            auto elapsed_solution =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(t_solution - global_start).count();
+            std::cerr << "[" << elapsed_solution << "ms] Solution found: " << prefix << "\n";
+        }
         write_line("ACCEPTED " + prefix);
         auto result = read_line();
+        if (ENABLE_PROFILING_LOGGING) {
+            auto t_result = std::chrono::steady_clock::now();
+            auto elapsed_result =
+                    std::chrono::duration_cast<std::chrono::milliseconds>(t_result - global_start).count();
+            std::cerr << "[" << elapsed_result << "ms] Result: " << result << "\n";
+        }
         if (result.rfind("SENT", 0) == 0)
             std::cout << "Posted " << result.substr(5) << "\n";
         else
@@ -356,8 +405,14 @@ private:
 };
 
 int main(int argc, char *argv[]) {
+    global_start = std::chrono::steady_clock::now();
+    if (ENABLE_PROFILING_LOGGING) {
+        auto t_init = std::chrono::steady_clock::now();
+        auto elapsed_init = std::chrono::duration_cast<std::chrono::milliseconds>(t_init - global_start).count();
+        std::cerr << "[" << elapsed_init << "ms] Program started\n";
+    }
     if (argc < 3) {
-        std::cerr << "Usage: " << argv[0] << " <post|get> <file_or_id> [--log]\n";
+        std::cerr << "Usage: " << argv[0] << " <post|get> <file_or_id> [--log] [--profile]\n";
         return 1;
     }
 
@@ -369,6 +424,8 @@ int main(int argc, char *argv[]) {
         std::string arg = argv[i];
         if (arg == "--log") {
             log = true;
+        } else if (arg == "--profile") {
+            ENABLE_PROFILING_LOGGING = true;
         } else if (mode.empty()) {
             mode = arg;
         } else if (target.empty()) {
@@ -382,7 +439,6 @@ int main(int argc, char *argv[]) {
         std::cerr << "Invalid mode '" << mode << "', expected 'post' or 'get'\n";
         return 1;
     }
-
     try {
         asio::io_context ctx;
         BeamClient client(ctx, "45.146.253.5", 6969);
