@@ -331,13 +331,13 @@ public:
     }
 
     void get_file(const std::string &id) {
+        if (read_line() != "HI")
+            throw std::runtime_error("Bad greeting");
         write_line("GET " + id);
 
         boost::system::error_code ec;
         std::array<char, 4096> buf;
         while (true) {
-            if ("HI" != read_line())
-                throw std::runtime_error("Bad greeting");
             std::size_t len = socket_.read_some(asio::buffer(buf), ec);
             if (ec == asio::error::eof) {
                 break;
